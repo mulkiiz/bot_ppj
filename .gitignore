@@ -1,0 +1,10 @@
+# Real secrets — never commit. Copy config.example.php -> config.php and fill in.
+config.php
+
+# Logs
+error_log
+php_error.log
+*.log
+
+# ACME / cert challenges
+.well-known/
