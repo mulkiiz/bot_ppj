@@ -1,10 +1,15 @@
 # Real secrets — never commit. Copy config.example.php -> config.php and fill in.
 config.php
 
-# Logs
+# Agen harian secrets — copy cron/config.agen.example.php -> cron/config.agen.php
+cron/config.agen.php
+
+# Logs & artefak generated agen harian
 error_log
 php_error.log
 *.log
+cron/log_agen_harian.txt
+cron/galeri24_raw.html
 
 # ACME / cert challenges
 .well-known/

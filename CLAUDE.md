@@ -8,6 +8,8 @@ A Telegram bot + broadcast tooling for **Desa BRILiaN 2026**, an Indonesian vill
 
 There is no framework, no package manager, no build step, and no test suite. It is a handful of standalone PHP scripts deployed by uploading files to shared cPanel hosting. Comments and user-facing strings are in Indonesian.
 
+A second, unrelated subsystem also lives here: **`cron/agen_harian.php`** — a daily Telegram briefing agent (kurs/emas, journal-server status check for `jos.unsoed.ac.id`, Groq economic note). It shares nothing with the BRILiaN credential bot except being PHP + Telegram + cURL. See [`cron/AGEN_HARIAN.md`](cron/AGEN_HARIAN.md) for its modules, config (`cron/config.agen.php`, gitignored), and cron schedule. It uses `includes/cacert.pem` as the cURL CA bundle.
+
 ## Runtime & deployment
 
 - **Target host:** cPanel shared hosting, **PHP 7.4** (`ea-php74`, pinned in `.htaccess`), domain `miz.jurnalsinta.id`. Local dev is XAMPP under `C:\xampp\htdocs\botppj`.
