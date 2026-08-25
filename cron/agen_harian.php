@@ -337,16 +337,6 @@ function ringkas_ruang($r) {
     return $r;
 }
 
-/** Icon relevan per mata kuliah */
-function icon_mk($nama) {
-    $n = strtolower($nama);
-    if (strpos($n, 'praktikum') !== false) return '🧪';
-    if (strpos($n, 'kecerdasan') !== false || strpos($n, 'machine') !== false || strpos($n, 'mining') !== false) return '🤖';
-    if (strpos($n, 'pemrograman') !== false || strpos($n, 'internet') !== false) return '💻';
-    if (strpos($n, 'capstone') !== false || strpos($n, 'metodologi') !== false || strpos($n, 'penelitian') !== false) return '🎯';
-    return '📘';
-}
-
 /**
  * Ambil jadwal kuliah hari ini dari DB.
  * Return: array baris (bisa kosong = tak ada kelas) | null (gagal koneksi/config).
@@ -468,16 +458,20 @@ function bangun_pesan($kurs, $emas_dunia, $g24, $catatan, $hosts, $jadwal) {
         $L[] = "😴 <i>Tidak ada jadwal kuliah hari ini.</i>";
     } else {
         $prodi_now = null;
+        $no = 0;
         foreach ($jadwal as $j) {
             $plabel = label_prodi($j['prodi']);
             if ($plabel !== $prodi_now) {
                 $prodi_now = $plabel;
+                $no = 0;
                 $L[] = "";
                 $L[] = "🎓 <b>Prodi " . esc($plabel) . "</b>";
             }
-            $L[] = icon_mk($j['namamk']) . " " . esc($j['kodemk']) . ", " . esc($j['namamk']) . ", Kelas " . esc($j['kelas']);
-            $L[] = "⏰ Waktu: " . esc($j['jm']) . "–" . esc($j['js']);
-            $L[] = "📍 Ruang: " . esc(ringkas_ruang($j['ruang'])) . " (" . (int)$j['terisi'] . " mhs)";
+            $no++;
+            $jam = str_replace(':', '.', $j['jm']) . "-" . str_replace(':', '.', $j['js']);
+            $L[] = "";
+            $L[] = $no . ". " . esc($j['kodemk']) . ", " . esc($j['namamk']) . " (" . esc($j['kelas']) . ")";
+            $L[] = "⏰ Waktu: " . $jam . " (" . esc(ringkas_ruang($j['ruang'])) . ", " . (int)$j['terisi'] . " mhs)";
         }
     }
     $L[] = "";
