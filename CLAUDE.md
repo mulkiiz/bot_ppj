@@ -4,66 +4,65 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Telegram bot + broadcast tooling for **Desa BRILiaN 2026**, an Indonesian village-training program. Village officials message the bot with `KODEDESA 4DIGITHP`; the bot verifies them against a MySQL `users` table and replies with their Moodle/LMS Joglo credentials (username + password) plus event info. Companion scripts blast the same credentials to participants over Telegram and email.
+**Agen Harian PPJ — LPPM Unsoed**: a single PHP cron script that assembles a **daily morning briefing** and sends it to Telegram. It has no framework, no build step, and no test suite — one standalone script plus config and data. Comments and user-facing strings are in Indonesian.
 
-There is no framework, no package manager, no build step, and no test suite. It is a handful of standalone PHP scripts deployed by uploading files to shared cPanel hosting. Comments and user-facing strings are in Indonesian.
-
-A second, unrelated subsystem also lives here: **`cron/agen_harian.php`** — a daily Telegram briefing agent (kurs/emas, journal-server status check for `jos.unsoed.ac.id`, Groq economic note). It shares nothing with the BRILiaN credential bot except being PHP + Telegram + cURL. See [`cron/AGEN_HARIAN.md`](cron/AGEN_HARIAN.md) for its modules, config (`cron/config.agen.php`, gitignored), and cron schedule. It uses `includes/cacert.pem` as the cURL CA bundle.
+The entire runtime is [`cron/agen_harian.php`](cron/agen_harian.php). Everything else supports it. Deeper module/config notes live in [`cron/AGEN_HARIAN.md`](cron/AGEN_HARIAN.md) — read it before changing the agent.
 
 ## Runtime & deployment
 
-- **Target host:** cPanel shared hosting, **PHP 7.4** (`ea-php74`, pinned in `.htaccess`), domain `miz.jurnalsinta.id`. Local dev is XAMPP under `C:\xampp\htdocs\botppj`.
-- **DB access is `mysqli` only** — assume **no PDO and no mysqlnd**. That is why prepared statements use `bind_param` + `bind_result`/`get_result` rather than PDO. Keep new DB code in that style; do not introduce PDO.
-- **Telegram delivery uses raw cURL** to `api.telegram.org/bot<TOKEN>/sendMessage`. No SDK.
-- **Deploy = upload the changed `.php` file(s)** to the host. To (re)point Telegram at the webhook, call the Telegram `setWebhook` API with the URL and the `X_TELEGRAM_BOT_API_SECRET_TOKEN` secret — there is no `set_webhook.php` checked in, so do it manually or add one.
-- `myrandom.php` just prints `bin2hex(random_bytes(16))` — used to generate a new webhook/secret value.
-- `diag.php` is a health-check page (extensions present, config filled, DB reachable). It and the blast scripts are meant to be **deleted from the server after use** (noted in their own headers).
+- **Target host:** cPanel shared hosting, **PHP 7.4** (`ea-php74`, pinned in `.htaccess`). Local dev is XAMPP under `C:\xampp\htdocs\botppj` (MariaDB 10.4, `mysql -uroot` no password).
+- **Cron:** runs daily 07:00 WIB. Production path `/home/jurz2196/public_html/ppj/cron/agen_harian.php`.
+- **cURL** for all outbound HTTP (Telegram + data sources), with CA bundle `includes/cacert.pem` (relative `../includes/cacert.pem`, overridable via `CA_BUNDLE_PATH`).
+- **`mysqli` only** — assume **no mysqlnd**. The jadwal query uses `bind_param` + `bind_result` (not `get_result`) for that reason. Keep new DB code in that style.
 
-## Architecture / big picture
+## How to run
 
-### Two webhook handlers exist — `webhook.php` is the live one
+```bash
+# Preview locally — renders the message, does NOT send to Telegram
+C:\xampp\php\php.exe cron/agen_harian.php preview
 
-`webhook.php` and `bot.php` are **two generations of the same Telegram handler** and expect **different database schemas**. Do not assume they are interchangeable.
+# Real send — delivers to TELEGRAM_CHAT_ID
+C:\xampp\php\php.exe cron/agen_harian.php
 
-- **`webhook.php` (current/active)** — loads secrets from `config.php` (`require`), uses a **persistent** connection (`p:` host prefix), sends the reply first then calls `finishRequest()` (`fastcgi_finish_request`) and runs audit/rate-limit inserts in `runDeferred()` *after* the response is closed. Rate limiting is a **dedicated `rate_limit` table**; audit rows go to `audit_log(telegram_id, telegram_name, query_username, status, created_at)`. Supports an admin-only `/stats`.
-- **`bot.php` (older)** — hardcodes the same secrets as `const`s instead of using `config.php`, does everything synchronously, and uses a **different `audit_log` shape** (`chat_id, input_text, status, ts`) with rate limiting counted from `audit_log` itself (no `rate_limit` table).
+# Browser (on server): with CRON_SECRET
+#   https://<host>/cron/agen_harian.php?key=<CRON_SECRET>[&preview=1]
+```
 
-The downstream broadcast scripts read the **`webhook.php` schema** (`audit_log.query_username`, `created_at`), which confirms `webhook.php` is the one in production. **When changing bot behavior, edit `webhook.php`.** Treat `bot.php` as legacy reference unless explicitly told otherwise.
+**`preview` mode** is the key dev affordance: it skips `kirim_telegram()`, prints the assembled HTML, and does not fatal when the (normally mandatory) kurs module fails — so you can inspect output without spamming Telegram.
 
-### Auth model (the core logic)
+## Architecture
 
-Two-factor lookup, no sessions: `username` = 10-digit village code (Kemendagri), second factor = last 4 digits of the village head's phone (`users.hp_last4`), compared with `hash_equals`. Input is validated with `preg_match('/^(\d{10})\s+(\d{4})$/', ...)`. Rate limit is 5 requests/hour per Telegram user. Every attempt is logged to `audit_log` with a `status` string (`success`, `wrong_2fa`, `user_not_found`, `invalid_format`, `rate_limited`, …) — these status strings are also what `/stats` and the broadcast targeting query group on, so keep them stable.
+`agen_harian.php` is procedural, organized as numbered modules. Each `ambil_*()` / `cek_*()` gathers one section (returns `null` on failure → rendered as "data tidak tersedia"), then `bangun_pesan()` assembles the Telegram HTML and `kirim_telegram()` sends it. Only **kurs is mandatory** (its failure aborts the run and sends an error notice); every other module is best-effort.
 
-### Broadcast / blast scripts (browser-triggered, not cron)
+| Module | Source | Notes |
+|--------|--------|-------|
+| 1 Kurs USD/IDR | `open.er-api.com` | **mandatory** |
+| 2 Emas Dunia (XAU) | `goldapi.io` | needs `GOLD_API_KEY` |
+| 3 Emas Galeri24 | scrape `galeri24.co.id` | dumps `galeri24_raw.html` on parse-fail |
+| 4 Status Jurnal | `cek_host()` over `jos.unsoed.ac.id` + `jurnal.unsoed.ac.id` | reachability + judol-keyword scan; hosts listed in the execution block |
+| 6 Catatan Ekonomi | Groq LLM | needs `GROQ_API_KEY`; only facts, no advice |
+| 7 Jadwal Kuliah | **MySQL `jadwal_kuliah`** | reminder of today's classes, grouped per prodi |
 
-`broadcast.php` (Telegram) and `email_blast.php` (email via PHPMailer + cPanel SMTP) are one-shot admin scripts run by opening a URL with `?secret=<...>&mode=<...>`. Both share the same `mode` protocol:
+(Module 5 was a World Cup section, since removed.)
 
-- `mode=dry` (default) — count/preview targets, send nothing
-- `mode=live` — actually send
-- `mode=stats` — summarize the script's own `*_log` table
-- `email_blast.php` also has `mode=test&to=<email>` to send one test message
+To **add a host** to the status check, extend the `$hosts` array in the execution block. To **add a section** to the message, add its render into `bangun_pesan()` and wire the data fetch in the `try` block.
 
-Idempotency: before sending, each checks its log table for an existing `status='success'` row for that recipient and skips it, so re-running `live` resumes rather than duplicates. `broadcast.php` writes `broadcast_log`; `email_blast.php` writes `email_blast_log`.
+## Database (jadwal kuliah)
 
-**Targeting differs between the two:** `broadcast.php` derives its audience from real bot usage — the most recent `success` per `telegram_id` in `audit_log`, joined to `users` on `query_username`. `email_blast.php` reads a separate **`email_recipients`** table and looks each row's password up from `users`.
+Only module 7 touches a DB. Schema + seed: [`cron/sql/jadwal_kuliah.sql`](cron/sql/jadwal_kuliah.sql).
 
-### `index.php` is unrelated
+```bash
+mysql -u<user> -p <db> < cron/sql/jadwal_kuliah.sql
+```
 
-`index.php` is a large (~1600-line) static Folium/Leaflet map export — pure HTML/JS, **no PHP, no DB**, not part of the bot. Ignore it when working on bot logic.
-
-### `assets/`
-
-`poster_brilian2026.jpg(.jpeg)` and `undangan_brilian2026.pdf` are the attachments `email_blast.php` sends.
-
-## Database tables (inferred from queries — no schema file in repo)
-
-- **`users`** — `username` (village code, PK-ish), `password`, `hp_last4`, `nama_desa`, `kecamatan`, `kabupaten` (source of truth for credentials)
-- **`audit_log`** — active shape: `telegram_id, telegram_name, query_username, status, created_at`
-- **`rate_limit`** — `telegram_id, created_at` (old rows pruned opportunistically in `runDeferred`)
-- **`broadcast_log`** — `telegram_id, username, status, response, created_at`
-- **`email_recipients`** — `username, email, nama_desa, kecamatan, kabupaten, provinsi`
-- **`email_blast_log`** — `email, nama_desa, status, response, created_at`
+The seed is regenerated from an instructor's `jadwal mengajar.xlsx` (columns → `kodemk, namamk, prodi, kelas, hari, kapasitas, terisi, ruang, jam_mulai, jam_selesai`). `hari` is an uppercase Indonesian ENUM (`SENIN`…`MINGGU`); the query filters on today. Rendering helpers in the script: `label_prodi()` (adds S1/S2), `ringkas_ruang()` (`GEDUNG TEKNIK C 101` → `C101`), `icon_mk()` (per-course emoji).
 
 ## Secrets & config
 
-`config.php` holds live DB creds, the bot token, and the webhook secret, and is intended **not** to be committed to a public repo (per its own header). Note that `bot.php`, `broadcast.php`, and `email_blast.php` currently **duplicate those same secrets inline as `const`s** rather than including `config.php` — if you rotate a token, DB password, or the webhook/broadcast/blast secret, update it in `config.php` **and** in each of those scripts, or they will silently use the stale value.
+`cron/config.agen.php` holds all secrets and is **gitignored** — copy the template and fill real values:
+
+```bash
+cp cron/config.agen.example.php cron/config.agen.php
+```
+
+Keys: `GROQ_API_KEY`, `GOLD_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `CRON_SECRET`, and `AGEN_DB_*` (DB creds for module 7). Local dev uses `AGEN_DB_USER='root'` with an empty password; set real cPanel DB creds on the server. Generated artifacts `cron/log_agen_harian.txt` and `cron/galeri24_raw.html` are also gitignored.
