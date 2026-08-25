@@ -37,6 +37,7 @@ define('URL_KURS',     'https://open.er-api.com/v6/latest/USD');
 define('URL_GOLD',     'https://www.goldapi.io/api/XAU/USD');
 define('URL_GALERI24', 'https://galeri24.co.id/harga-emas');
 define('URL_JOS',      'https://jos.unsoed.ac.id/');
+define('URL_JURNAL',   'https://jurnal.unsoed.ac.id/');
 
 
 // ============================================================
@@ -227,12 +228,13 @@ function ambil_emas_galeri24() {
 
 
 // ============================================================
-//  🖥️  MODUL 4: CEK JOS UNSOED (deteksi judol)
+//  🖥️  MODUL 4: CEK HOST JURNAL (reachability + deteksi judol)
 // ============================================================
 
-function cek_jos() {
-    tulis_log('Cek jos.unsoed.ac.id...');
-    $resp = http_request(URL_JOS, 'GET', [], null, 20);
+/** Cek satu host jurnal: reachability + indikasi judol. Return ['status','pesan']. */
+function cek_host($nama, $url) {
+    tulis_log("Cek $nama...");
+    $resp = http_request($url, 'GET', [], null, 20);
 
     // Tidak bisa diakses sama sekali
     if (!$resp) {
@@ -300,10 +302,91 @@ function catatan_ekonomi($kurs, $emas_dunia, $g24) {
 
 
 // ============================================================
+//  📚  MODUL 7: JADWAL KULIAH (dari DB, reminder harian)
+// ============================================================
+
+/** Hari ini dalam huruf besar Indonesia: SENIN..MINGGU */
+function hari_ini_id() {
+    $map = ['Monday'=>'SENIN','Tuesday'=>'SELASA','Wednesday'=>'RABU',
+            'Thursday'=>'KAMIS','Friday'=>'JUMAT','Saturday'=>'SABTU','Sunday'=>'MINGGU'];
+    return $map[date('l')];
+}
+
+/** Tanggal ringkas: "Selasa, 25-Ags-2026" */
+function tanggal_pendek_id($ts = null) {
+    $ts = $ts ?? time();
+    $hari = ['Sunday'=>'Minggu','Monday'=>'Senin','Tuesday'=>'Selasa','Wednesday'=>'Rabu',
+             'Thursday'=>'Kamis','Friday'=>'Jumat','Saturday'=>'Sabtu'];
+    $bln  = [1=>'Jan','Feb','Mar','Apr','Mei','Jun','Jul','Ags','Sep','Okt','Nov','Des'];
+    return $hari[date('l', $ts)] . ', ' . date('j', $ts) . '-' . $bln[(int)date('n', $ts)] . '-' . date('Y', $ts);
+}
+
+/** "Teknik Elektro" -> "S1 Teknik Elektro"; "...(S2)" -> "S2 ..." */
+function label_prodi($p) {
+    if (preg_match('/\(S2\)/i', $p)) {
+        return 'S2 ' . trim(preg_replace('/\s*\(S2\)/i', '', $p));
+    }
+    return 'S1 ' . trim($p);
+}
+
+/** Ringkas ruang: "GEDUNG TEKNIK C 101" -> "C101"; selain itu apa adanya */
+function ringkas_ruang($r) {
+    if (preg_match('/GEDUNG\s*TEKNIK\s*([A-Za-z])\s*(\d+)/i', $r, $m)) {
+        return strtoupper($m[1]) . $m[2];
+    }
+    return $r;
+}
+
+/** Icon relevan per mata kuliah */
+function icon_mk($nama) {
+    $n = strtolower($nama);
+    if (strpos($n, 'praktikum') !== false) return '🧪';
+    if (strpos($n, 'kecerdasan') !== false || strpos($n, 'machine') !== false || strpos($n, 'mining') !== false) return '🤖';
+    if (strpos($n, 'pemrograman') !== false || strpos($n, 'internet') !== false) return '💻';
+    if (strpos($n, 'capstone') !== false || strpos($n, 'metodologi') !== false || strpos($n, 'penelitian') !== false) return '🎯';
+    return '📘';
+}
+
+/**
+ * Ambil jadwal kuliah hari ini dari DB.
+ * Return: array baris (bisa kosong = tak ada kelas) | null (gagal koneksi/config).
+ */
+function ambil_jadwal_hari($hari) {
+    if (!defined('AGEN_DB_HOST')) { tulis_log('Config DB kosong, skip jadwal'); return null; }
+    tulis_log("Ambil jadwal kuliah $hari...");
+    $db = @new mysqli(AGEN_DB_HOST, AGEN_DB_USER, AGEN_DB_PASS, AGEN_DB_NAME);
+    if ($db->connect_errno) { tulis_log('DB jadwal error: ' . $db->connect_error); return null; }
+    $db->set_charset('utf8mb4');
+
+    $stmt = $db->prepare(
+        "SELECT prodi, kodemk, namamk, kelas, ruang, terisi,
+                TIME_FORMAT(jam_mulai,'%H:%i')   AS jm,
+                TIME_FORMAT(jam_selesai,'%H:%i') AS js
+         FROM jadwal_kuliah
+         WHERE hari = ?
+         ORDER BY prodi, jam_mulai, kelas"
+    );
+    if (!$stmt) { tulis_log('Prepare jadwal gagal: ' . $db->error); $db->close(); return null; }
+    $stmt->bind_param('s', $hari);
+    $stmt->execute();
+    // bind_result (tanpa get_result) agar tidak butuh mysqlnd
+    $stmt->bind_result($prodi, $kodemk, $namamk, $kelas, $ruang, $terisi, $jm, $js);
+    $rows = [];
+    while ($stmt->fetch()) {
+        $rows[] = compact('prodi', 'kodemk', 'namamk', 'kelas', 'ruang', 'terisi', 'jm', 'js');
+    }
+    $stmt->close();
+    $db->close();
+    tulis_log('Jadwal kuliah: ' . count($rows) . ' kelas.');
+    return $rows;
+}
+
+
+// ============================================================
 //  💬  BUILD PESAN TELEGRAM (parse_mode HTML)
 // ============================================================
 
-function bangun_pesan($kurs, $emas_dunia, $g24, $catatan, $jos) {
+function bangun_pesan($kurs, $emas_dunia, $g24, $catatan, $hosts, $jadwal) {
     $L = [];
     $L[] = "🌅 <b>BRIEFING HARIAN</b>";
     $L[] = "📅 " . esc(tanggal_id());
@@ -363,18 +446,40 @@ function bangun_pesan($kurs, $emas_dunia, $g24, $catatan, $jos) {
     $L[] = "━━━━━━━━━━━━━━━━━━";
     $ikon = ['ok'=>'✅','warning'=>'⚠️','down'=>'🔴','hacked'=>'🚨'];
     $label = ['ok'=>'NORMAL','warning'=>'PERLU CEK','down'=>'DOWN','hacked'=>'BAHAYA'];
-    $st = $jos['status'];
-    $L[] = ($ikon[$st] ?? '❔') . " <b>jos.unsoed.ac.id</b> — " . ($label[$st] ?? '?');
-    $L[] = "   <i>" . esc($jos['pesan']) . "</i>";
-    if ($st === 'down' || $st === 'hacked') {
-        $L[] = "   👉 <i>Segera cek manual & jalankan scanner judol.</i>";
+    foreach ($hosts as $nama => $h) {
+        $st = $h['status'];
+        $L[] = ($ikon[$st] ?? '❔') . " <b>" . esc($nama) . "</b> — " . ($label[$st] ?? '?');
+        $L[] = "   <i>" . esc($h['pesan']) . "</i>";
+        if ($st === 'down' || $st === 'hacked') {
+            $L[] = "   👉 <i>Segera cek manual & jalankan scanner judol.</i>";
+        }
     }
     $L[] = "";
 
-    // ---------- (slot konten baru) ----------
-    // Modul Piala Dunia 2026 dihapus — siap diganti konten lain.
-
-
+    // ---------- JADWAL KULIAH ----------
+    $L[] = "━━━━━━━━━━━━━━━━━━";
+    $L[] = "📚 <b>JADWAL KULIAH HARI INI</b>";
+    $L[] = "━━━━━━━━━━━━━━━━━━";
+    $L[] = "🗓️ " . esc(tanggal_pendek_id());
+    if ($jadwal === null) {
+        $L[] = "<i>Data jadwal tidak tersedia.</i>";
+    } elseif (!$jadwal) {
+        $L[] = "";
+        $L[] = "😴 <i>Tidak ada jadwal kuliah hari ini.</i>";
+    } else {
+        $prodi_now = null;
+        foreach ($jadwal as $j) {
+            $plabel = label_prodi($j['prodi']);
+            if ($plabel !== $prodi_now) {
+                $prodi_now = $plabel;
+                $L[] = "";
+                $L[] = "🎓 <b>Prodi " . esc($plabel) . "</b>";
+            }
+            $L[] = icon_mk($j['namamk']) . " " . esc($j['kodemk']) . ", " . esc($j['namamk']) . ", Kelas " . esc($j['kelas']);
+            $L[] = "⏰ Waktu: " . esc($j['jm']) . "–" . esc($j['js']);
+            $L[] = "📍 Ruang: " . esc(ringkas_ruang($j['ruang'])) . " (" . (int)$j['terisi'] . " mhs)";
+        }
+    }
     $L[] = "";
     $L[] = "━━━━━━━━━━━━━━━━━━";
     $L[] = "<i>🤖 Agen Harian PPJ-LPPM Unsoed</i>";
@@ -412,6 +517,12 @@ function kirim_telegram($pesan) {
 
 tulis_log('========== MULAI AGEN HARIAN ==========');
 
+// Mode preview: cek lokal tanpa kirim Telegram.
+//   CLI    : php cron/agen_harian.php preview
+//   Browser: ?key=CRON_SECRET&preview=1
+$preview = (php_sapi_name() === 'cli' && in_array('preview', $argv ?? [], true))
+           || isset($_GET['preview']);
+
 // Proteksi akses browser
 if (php_sapi_name() !== 'cli') {
     if (($_GET['key'] ?? '') !== CRON_SECRET) {
@@ -424,17 +535,30 @@ if (php_sapi_name() !== 'cli') {
 try {
     // EKONOMI
     $kurs = ambil_kurs();
-    if (!$kurs) throw new Exception('Gagal ambil kurs (modul wajib).');
+    if (!$kurs && !$preview) throw new Exception('Gagal ambil kurs (modul wajib).');
 
-    $emas_dunia = ambil_emas_dunia($kurs['USD_IDR']);  // boleh null
-    $g24        = ambil_emas_galeri24();               // boleh null
-    $catatan    = catatan_ekonomi($kurs, $emas_dunia, $g24); // boleh null
+    $emas_dunia = ambil_emas_dunia($kurs['USD_IDR'] ?? 0);   // boleh null
+    $g24        = ambil_emas_galeri24();                     // boleh null
+    $catatan    = $kurs ? catatan_ekonomi($kurs, $emas_dunia, $g24) : null; // boleh null
 
-    // PPJ
-    $jos = cek_jos();
+    // PPJ — Status Jurnal (cek beberapa host)
+    $hosts = [
+        'jos.unsoed.ac.id'    => cek_host('jos.unsoed.ac.id',    URL_JOS),
+        'jurnal.unsoed.ac.id' => cek_host('jurnal.unsoed.ac.id', URL_JURNAL),
+    ];
 
-    // Susun & kirim
-    $pesan = bangun_pesan($kurs, $emas_dunia, $g24, $catatan, $jos);
+    // JADWAL KULIAH (dari DB)
+    $jadwal = ambil_jadwal_hari(hari_ini_id());
+
+    // Susun pesan
+    $pesan = bangun_pesan($kurs, $emas_dunia, $g24, $catatan, $hosts, $jadwal);
+
+    // Preview: tampilkan pesan, jangan kirim
+    if ($preview) {
+        echo $pesan . "\n";
+        tulis_log("========== SELESAI (PREVIEW) ==========\n");
+        exit;
+    }
 
     if (!kirim_telegram($pesan)) throw new Exception('Gagal kirim Telegram.');
 

@@ -12,3 +12,9 @@ define('TELEGRAM_BOT_TOKEN', 'xxxxxxxx:xxxxxxxxxxxxxxxxxxxxxxxxxxx');
 define('TELEGRAM_CHAT_ID',   '000000000');
 
 define('CRON_SECRET',        'ubah_ini'); // untuk akses via browser ?key=...
+
+// --- Database (tabel jadwal_kuliah) ---
+define('AGEN_DB_HOST', 'localhost');
+define('AGEN_DB_NAME', 'nama_database');
+define('AGEN_DB_USER', 'user_database');
+define('AGEN_DB_PASS', 'password_database');
